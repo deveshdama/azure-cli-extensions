@@ -180,7 +180,7 @@ helps['grafana data-source query'] = """
 helps['grafana notification-channel'] = """
     type: group
     short-summary: Commands to manage notification channels of an instance.
-    long-summary: As part of legacy alerting, this command group will be deprecated in a future release
+    long-summary: As part of Grafana legacy alerting, this command group only works with Grafana 10 and below.
 """
 
 helps['grafana notification-channel list'] = """
@@ -443,4 +443,29 @@ helps['grafana service-account token list'] = """
 helps['grafana service-account token delete'] = """
     type: command
     short-summary: Delete a service account token.
+"""
+
+helps['grafana integrations'] = """
+    type: group
+    short-summary: Commands to manage integrations of a Grafana instance.
+"""
+
+helps['grafana integrations monitor'] = """
+    type: group
+    short-summary: Commands to manage Azure Monitor workspace integrations of a Grafana instance.
+"""
+
+helps['grafana integrations monitor add'] = """
+    type: command
+    short-summary: Link an Azure Monitor workspace to a Grafana instance.
+"""
+
+helps['grafana integrations monitor list'] = """
+    type: command
+    short-summary: List all Azure Monitor workspaces linked to a Grafana instance.
+"""
+
+helps['grafana integrations monitor delete'] = """
+    type: command
+    short-summary: Unlink an Azure Monitor workspace from a Grafana instance.
 """

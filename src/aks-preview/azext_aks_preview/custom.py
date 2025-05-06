@@ -64,6 +64,7 @@ from azext_aks_preview._helpers import (
     get_nodepool_snapshot_by_snapshot_id,
     print_or_merge_credentials,
     process_message_for_run_command,
+    check_is_monitoring_addon_enabled,
 )
 from azext_aks_preview._podidentity import (
     _ensure_managed_identity_operator_permission,
@@ -369,7 +370,6 @@ def aks_create(
     auto_upgrade_channel=None,
     node_os_upgrade_channel=None,
     cluster_autoscaler_profile=None,
-    uptime_sla=False,
     sku=None,
     tier=None,
     fqdn_subdomain=None,
@@ -384,9 +384,6 @@ def aks_create(
     assign_kubelet_identity=None,
     enable_aad=False,
     enable_azure_rbac=False,
-    aad_client_app_id=None,
-    aad_server_app_id=None,
-    aad_server_app_secret=None,
     aad_tenant_id=None,
     aad_admin_group_object_ids=None,
     enable_oidc_issuer=False,
@@ -489,13 +486,15 @@ def aks_create(
     dns_zone_resource_ids=None,
     enable_keda=False,
     enable_vpa=False,
-    enable_addon_autoscaling=False,
+    enable_optimized_addon_scaling=False,
     enable_cilium_dataplane=False,
     custom_ca_trust_certificates=None,
-    enable_advanced_network_observability=None,
-    advanced_networking_observability_tls_management=None,
-    enable_fqdn_policy=None,
+    # advanced networking
     enable_acns=None,
+    disable_acns_observability=None,
+    disable_acns_security=None,
+    acns_advanced_networkpolicies=None,
+    enable_retina_flow_logs=None,
     # nodepool
     crg_id=None,
     message_of_the_day=None,
@@ -609,8 +608,6 @@ def aks_update(
     disable_force_upgrade=False,
     upgrade_override_until=None,
     cluster_autoscaler_profile=None,
-    uptime_sla=False,
-    no_uptime_sla=False,
     sku=None,
     tier=None,
     api_server_authorized_ip_ranges=None,
@@ -716,21 +713,22 @@ def aks_update(
     disable_azure_monitor_app_monitoring=False,
     enable_vpa=False,
     disable_vpa=False,
-    enable_addon_autoscaling=False,
-    disable_addon_autoscaling=False,
+    enable_optimized_addon_scaling=False,
+    disable_optimized_addon_scaling=False,
     cluster_snapshot_id=None,
     custom_ca_trust_certificates=None,
     # safeguards parameters
     safeguards_level=None,
     safeguards_version=None,
     safeguards_excluded_ns=None,
-    enable_advanced_network_observability=None,
-    disable_advanced_network_observability=None,
-    advanced_networking_observability_tls_management=None,
-    enable_fqdn_policy=None,
-    disable_fqdn_policy=None,
+    # advanced networking
     enable_acns=None,
     disable_acns=None,
+    disable_acns_observability=None,
+    disable_acns_security=None,
+    acns_advanced_networkpolicies=None,
+    enable_retina_flow_logs=None,
+    disable_retina_flow_logs=None,
     # metrics profile
     enable_cost_analysis=False,
     disable_cost_analysis=False,
@@ -1188,6 +1186,7 @@ def aks_agentpool_add(
     drain_timeout=None,
     node_soak_duration=None,
     undrainable_node_behavior=None,
+    max_unavailable=None,
     mode=CONST_NODEPOOL_MODE_USER,
     scale_down_mode=CONST_SCALE_DOWN_MODE_DELETE,
     max_pods=0,
@@ -1269,6 +1268,7 @@ def aks_agentpool_update(
     drain_timeout=None,
     node_soak_duration=None,
     undrainable_node_behavior=None,
+    max_unavailable=None,
     mode=None,
     scale_down_mode=None,
     no_wait=False,
@@ -1360,6 +1360,7 @@ def aks_agentpool_upgrade(cmd,
                           drain_timeout=None,
                           node_soak_duration=None,
                           undrainable_node_behavior=None,
+                          max_unavailable=None,
                           snapshot_id=None,
                           no_wait=False,
                           aks_custom_headers=None,
@@ -1379,7 +1380,8 @@ def aks_agentpool_upgrade(cmd,
         )
 
     # Note: we exclude this option because node image upgrade can't accept nodepool put fields like max surge
-    if (max_surge or drain_timeout or node_soak_duration or undrainable_node_behavior) and node_image_only:
+    hasUpgradeSetting = max_surge or drain_timeout or node_soak_duration or undrainable_node_behavior or max_unavailable
+    if hasUpgradeSetting and node_image_only:
         raise MutuallyExclusiveArgumentError(
             "Conflicting flags. Unable to specify max-surge/drain-timeout/node-soak-duration with node-image-only."
             "If you want to use max-surge/drain-timeout/node-soak-duration with a node image upgrade, please first "
@@ -1440,10 +1442,12 @@ def aks_agentpool_upgrade(cmd,
         instance.upgrade_settings.max_surge = max_surge
     if drain_timeout:
         instance.upgrade_settings.drain_timeout_in_minutes = drain_timeout
-    if node_soak_duration:
+    if isinstance(node_soak_duration, int) and node_soak_duration >= 0:
         instance.upgrade_settings.node_soak_duration_in_minutes = node_soak_duration
     if undrainable_node_behavior:
         instance.upgrade_settings.undrainable_node_behavior = undrainable_node_behavior
+    if max_unavailable:
+        instance.upgrade_settings.max_unavailable = max_unavailable
 
     # custom headers
     aks_custom_headers = extract_comma_separated_string(
@@ -1847,11 +1851,11 @@ def aks_addon_list(cmd, client, resource_group_name, name):
         else:
             if addon_name == "virtual-node":
                 addon_key += os_type
-            enabled = bool(
-                mc.addon_profiles and
-                addon_key in mc.addon_profiles and
-                mc.addon_profiles[addon_key].enabled
-            )
+            enabled = False
+            if mc.addon_profiles:
+                matching_key = next((key for key in mc.addon_profiles if key.lower() == addon_key.lower()), None)
+                if matching_key:
+                    enabled = bool(mc.addon_profiles[matching_key].enabled)
         current_addons.append({
             "name": addon_name,
             "api_key": addon_key,
@@ -2146,9 +2150,10 @@ def aks_enable_addons(
         dns_zone_resource_id=dns_zone_resource_id,
         dns_zone_resource_ids=dns_zone_resource_ids,
     )
+
+    is_monitoring_addon_enabled = check_is_monitoring_addon_enabled(addons, instance)
     if (
-        CONST_MONITORING_ADDON_NAME in instance.addon_profiles and
-        instance.addon_profiles[CONST_MONITORING_ADDON_NAME].enabled
+        is_monitoring_addon_enabled
     ):
         if (
             CONST_MONITORING_USING_AAD_MSI_AUTH in
@@ -2201,8 +2206,6 @@ def aks_enable_addons(
                 aad_route=False,
             )
 
-    monitoring = CONST_MONITORING_ADDON_NAME in instance.addon_profiles and instance.addon_profiles[
-        CONST_MONITORING_ADDON_NAME].enabled
     ingress_appgw_addon_enabled = CONST_INGRESS_APPGW_ADDON_NAME in instance.addon_profiles and instance.addon_profiles[
         CONST_INGRESS_APPGW_ADDON_NAME].enabled
 
@@ -2211,7 +2214,11 @@ def aks_enable_addons(
     if CONST_VIRTUAL_NODE_ADDON_NAME + os_type in instance.addon_profiles:
         enable_virtual_node = True
 
-    need_post_creation_role_assignment = monitoring or ingress_appgw_addon_enabled or enable_virtual_node
+    need_post_creation_role_assignment = (
+        is_monitoring_addon_enabled or
+        ingress_appgw_addon_enabled or
+        enable_virtual_node
+    )
     if need_post_creation_role_assignment:
         # adding a wait here since we rely on the result for role assignment
         result = LongRunningOperation(cmd.cli_ctx)(
@@ -2959,60 +2966,6 @@ def aks_nodepool_snapshot_list(cmd, client, resource_group_name=None):  # pylint
     return client.list_by_resource_group(resource_group_name)
 
 
-def aks_trustedaccess_role_list(cmd, client, location):  # pylint: disable=unused-argument
-    return client.list(location)
-
-
-def aks_trustedaccess_role_binding_list(cmd, client, resource_group_name, cluster_name):   # pylint: disable=unused-argument
-    return client.list(resource_group_name, cluster_name)
-
-
-def aks_trustedaccess_role_binding_get(cmd, client, resource_group_name, cluster_name, role_binding_name):
-    return client.get(resource_group_name, cluster_name, role_binding_name)
-
-
-def aks_trustedaccess_role_binding_create(cmd, client, resource_group_name, cluster_name, role_binding_name,
-                                          source_resource_id, roles):
-    TrustedAccessRoleBinding = cmd.get_models(
-        "TrustedAccessRoleBinding",
-        resource_type=CUSTOM_MGMT_AKS_PREVIEW,
-        operation_group="trusted_access_role_bindings",
-    )
-    existedBinding = None
-    try:
-        existedBinding = client.get(resource_group_name, cluster_name, role_binding_name)
-    except ResourceNotFoundError:
-        pass
-
-    if existedBinding:
-        raise Exception(  # pylint: disable=broad-exception-raised
-            "TrustedAccess RoleBinding " +
-            role_binding_name +
-            " already existed, please use 'az aks trustedaccess rolebinding update' command to update!"
-        )
-
-    roleList = roles.split(',')
-    roleBinding = TrustedAccessRoleBinding(source_resource_id=source_resource_id, roles=roleList)
-    return client.begin_create_or_update(resource_group_name, cluster_name, role_binding_name, roleBinding)
-
-
-def aks_trustedaccess_role_binding_update(cmd, client, resource_group_name, cluster_name, role_binding_name, roles):
-    TrustedAccessRoleBinding = cmd.get_models(
-        "TrustedAccessRoleBinding",
-        resource_type=CUSTOM_MGMT_AKS_PREVIEW,
-        operation_group="trusted_access_role_bindings",
-    )
-    existedBinding = client.get(resource_group_name, cluster_name, role_binding_name)
-
-    roleList = roles.split(',')
-    roleBinding = TrustedAccessRoleBinding(source_resource_id=existedBinding.source_resource_id, roles=roleList)
-    return client.begin_create_or_update(resource_group_name, cluster_name, role_binding_name, roleBinding)
-
-
-def aks_trustedaccess_role_binding_delete(cmd, client, resource_group_name, cluster_name, role_binding_name):
-    return client.begin_delete(resource_group_name, cluster_name, role_binding_name)
-
-
 def aks_mesh_enable(
     cmd,
     client,
@@ -3107,13 +3060,19 @@ def aks_mesh_enable_egress_gateway(
         client,
         resource_group_name,
         name,
+        istio_egressgateway_name,
+        istio_egressgateway_namespace,
+        gateway_configuration_name,
 ):
     return _aks_mesh_update(
         cmd,
         client,
         resource_group_name,
         name,
-        enable_egress_gateway=True)
+        enable_egress_gateway=True,
+        istio_egressgateway_name=istio_egressgateway_name,
+        istio_egressgateway_namespace=istio_egressgateway_namespace,
+        gateway_configuration_name=gateway_configuration_name)
 
 
 def aks_mesh_disable_egress_gateway(
@@ -3121,12 +3080,16 @@ def aks_mesh_disable_egress_gateway(
         client,
         resource_group_name,
         name,
+        istio_egressgateway_name,
+        istio_egressgateway_namespace,
 ):
     return _aks_mesh_update(
         cmd,
         client,
         resource_group_name,
         name,
+        istio_egressgateway_name=istio_egressgateway_name,
+        istio_egressgateway_namespace=istio_egressgateway_namespace,
         disable_egress_gateway=True)
 
 
@@ -3253,6 +3216,9 @@ def _aks_mesh_update(
         ingress_gateway_type=None,
         enable_egress_gateway=None,
         disable_egress_gateway=None,
+        istio_egressgateway_name=None,
+        istio_egressgateway_namespace=None,
+        gateway_configuration_name=None,
         revision=None,
         yes=False,
         mesh_upgrade_command=None,
@@ -3689,3 +3655,169 @@ def aks_check_network_outbound(
                             instance_id,
                             vm_name,
                             custom_endpoints)
+
+
+# pylint: disable=unused-argument
+def aks_loadbalancer_add(
+    cmd,
+    client,
+    resource_group_name,
+    cluster_name,
+    name,
+    primary_agent_pool_name,
+    allow_service_placement=None,
+    service_label_selector=None,
+    service_namespace_selector=None,
+    node_selector=None,
+    aks_custom_headers=None,
+):
+    """Add a load balancer configuration to a managed cluster.
+
+    :param resource_group_name: Name of resource group.
+    :type resource_group_name: str
+    :param cluster_name: Name of the managed cluster.
+    :type cluster_name: str
+    :param name: Name of the public load balancer.
+    :type name: str
+    :param primary_agent_pool_name: Name of the primary agent pool for this load balancer.
+    :type primary_agent_pool_name: str
+    :param allow_service_placement: Whether to automatically place services on the load balancer. Default is true.
+    :type allow_service_placement: bool
+    :param service_label_selector: Only services that match this selector can be placed on this load balancer.
+    :type service_label_selector: str
+    :param service_namespace_selector: Services created in namespaces that match the selector can be
+        placed on this load balancer.
+    :type service_namespace_selector: str
+    :param node_selector: Nodes that match this selector will be possible members of this load balancer.
+    :type node_selector: str
+    """
+    # DO NOT MOVE: get all the original parameters and save them as a dictionary
+    raw_parameters = locals()
+    from azext_aks_preview.loadbalancerconfiguration import (
+        aks_loadbalancer_add_internal,
+    )
+
+    return aks_loadbalancer_add_internal(cmd, client, raw_parameters)
+
+
+def aks_loadbalancer_update(
+    cmd,
+    client,
+    resource_group_name,
+    cluster_name,
+    name,
+    primary_agent_pool_name=None,
+    allow_service_placement=None,
+    service_label_selector=None,
+    service_namespace_selector=None,
+    node_selector=None,
+    aks_custom_headers=None,
+):
+    """Update a load balancer configuration in a managed cluster.
+
+    :param resource_group_name: Name of resource group.
+    :type resource_group_name: str
+    :param cluster_name: Name of the managed cluster.
+    :type cluster_name: str
+    :param loadbalancer_name: Name of the load balancer configuration.
+    :type loadbalancer_name: str
+    :param name: Name of the public load balancer.
+    :type name: str
+    :param primary_agent_pool_name: Name of the primary agent pool for this load balancer.
+    :type primary_agent_pool_name: str
+    :param allow_service_placement: Whether to automatically place services on the load balancer. Default is true.
+    :type allow_service_placement: bool
+    :param service_label_selector: Only services that match this selector can be placed on this load balancer.
+    :type service_label_selector: str
+    :param service_namespace_selector: Services created in namespaces that match the selector can be
+        placed on this load balancer.
+    :type service_namespace_selector: str
+    :param node_selector: Nodes that match this selector will be possible members of this load balancer.
+    :type node_selector: str
+    """
+
+    # DO NOT MOVE: get all the original parameters and save them as a dictionary
+    raw_parameters = locals()
+    from azext_aks_preview.loadbalancerconfiguration import (
+        aks_loadbalancer_update_internal,
+    )
+
+    return aks_loadbalancer_update_internal(cmd, client, raw_parameters)
+
+
+def aks_loadbalancer_delete(cmd, client, resource_group_name, cluster_name, name):
+    """Delete a load balancer configuration in a managed cluster.
+
+    :param resource_group_name: Name of resource group.
+    :type resource_group_name: str
+    :param cluster_name: Name of the managed cluster.
+    :type cluster_name: str
+    :param name: Name of the load balancer configuration.
+    :type name: str
+    """
+    return client.begin_delete(resource_group_name, cluster_name, name)
+
+
+def aks_loadbalancer_list(cmd, client, resource_group_name, cluster_name):
+    """List load balancer configurations in a managed cluster.
+
+    :param resource_group_name: Name of resource group.
+    :type resource_group_name: str
+    :param cluster_name: Name of the managed cluster.
+    :type cluster_name: str
+    """
+    return client.list_by_managed_cluster(resource_group_name, cluster_name)
+
+
+def aks_loadbalancer_show(cmd, client, resource_group_name, cluster_name, name):
+    """Show the details for a load balancer configuration.
+
+    :param resource_group_name: Name of resource group.
+    :type resource_group_name: str
+    :param cluster_name: Name of the managed cluster.
+    :type cluster_name: str
+    :param name: Name of the load balancer configuration.
+    :type name: str
+    """
+    return client.get(resource_group_name, cluster_name, name)
+
+
+# pylint: disable=unused-argument
+def aks_loadbalancer_rebalance_nodes(
+    cmd,
+    client,
+    resource_group_name,
+    cluster_name,
+    load_balancer_names=None,
+):
+    """Rebalance nodes across specific load balancers.
+
+    :param cmd: Command context
+    :param client: AKS client
+    :param resource_group_name: Name of resource group.
+    :type resource_group_name: str
+    :param cluster_name: Name of the managed cluster.
+    :type cluster_name: str
+    :param load_balancer_names: Names of load balancers to rebalance.
+        If not specified, all load balancers will be rebalanced.
+    :type load_balancer_names: list[str]
+    :param no_wait: Do not wait for the long-running operation to finish.
+    :type no_wait: bool
+    :return: The result of the rebalance operation
+    """
+    from azext_aks_preview.loadbalancerconfiguration import (
+        aks_loadbalancer_rebalance_internal,
+    )
+    from azext_aks_preview._client_factory import cf_managed_clusters
+
+    # Get the load balancers client
+    managed_clusters_client = cf_managed_clusters(cmd.cli_ctx)
+
+    # Prepare parameters for the internal function
+    parameters = {
+        "resource_group_name": resource_group_name,
+        "cluster_name": cluster_name,
+        "load_balancer_names": load_balancer_names,
+    }
+
+    return aks_loadbalancer_rebalance_internal(managed_clusters_client, parameters)

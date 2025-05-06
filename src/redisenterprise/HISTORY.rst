@@ -2,6 +2,15 @@
 
 Release History
 ===============
+
+1.2.1b2
++++++++++
+- Update module documentation.
+
+1.2.1b1
++++++++++
+- Fix: Make latest version as peview as last 2 versions(1.2.0 abd 1.1.0) are mistakenly not marked as preview.
+
 1.2.0
 +++++++++
 - Fixes for highAvailability and accessKeysAuthentication argument.

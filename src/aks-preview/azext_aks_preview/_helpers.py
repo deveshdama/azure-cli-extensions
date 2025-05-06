@@ -9,13 +9,19 @@ import re
 import stat
 import sys
 import tempfile
-from typing import TypeVar
+from typing import List, TypeVar
 
 import yaml
 from azext_aks_preview._client_factory import (
     get_mc_snapshots_client,
     get_nodepool_snapshots_client,
 )
+
+from azext_aks_preview._consts import (
+    ADDONS,
+    CONST_MONITORING_ADDON_NAME
+)
+
 from azure.cli.command_modules.acs._helpers import map_azure_error_to_cli_error
 from azure.cli.command_modules.acs._validators import extract_comma_separated_string
 from azure.cli.core.azclierror import (
@@ -346,3 +352,46 @@ def check_is_azure_cli_core_editable_installed():
     except Exception as ex:  # pylint: disable=broad-except
         logger.debug("failed to check if azure-cli-core is installed as editable: %s", ex)
     return False
+
+
+def check_is_monitoring_addon_enabled(addons, instance):
+    is_monitoring_addon_enabled = False
+    is_monitoring_addon = False
+    try:
+        addon_args = addons.split(',')
+        for addon_arg in addon_args:
+            if addon_arg in ADDONS:
+                addon = ADDONS[addon_arg]
+                if addon == CONST_MONITORING_ADDON_NAME:
+                    is_monitoring_addon = True
+                    break
+        addon_profiles = instance.addon_profiles or {}
+        is_monitoring_addon_enabled = (
+            is_monitoring_addon
+            and CONST_MONITORING_ADDON_NAME in addon_profiles
+            and addon_profiles[CONST_MONITORING_ADDON_NAME].enabled
+        )
+    except Exception as ex:  # pylint: disable=broad-except
+        logger.debug("failed to check monitoring addon enabled: %s", ex)
+    return is_monitoring_addon_enabled
+
+
+def filter_hard_taints(node_initialization_taints: List[str]) -> List[str]:
+    filtered_taints = []
+    for taint in node_initialization_taints:
+        if not taint:
+            continue
+        # Parse the taint to get the effect
+        taint_parts = taint.split(":")
+        if len(taint_parts) == 2:
+            effect = taint_parts[-1].strip()
+            # Keep the taint if it has a soft effect (PreferNoSchedule)
+            # or if it's a CriticalAddonsOnly taint - AKS allows those on system pools
+            if effect.lower() == "prefernoschedule" or taint.lower().startswith("criticaladdonsonly"):
+                filtered_taints.append(taint)
+            else:
+                logger.warning('Taint %s with hard effect will be skipped from system pool', taint)
+        else:
+            # If the taint doesn't have a recognizable format, keep it, if it's incorrect - AKS-RP will return an error
+            filtered_taints.append(taint)
+    return filtered_taints

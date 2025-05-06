@@ -172,7 +172,7 @@ def __to_communication_identifier(participants):
     return [identifier_from_raw_id(p) for p in participants]
 
 
-def __to_room_participant(presenters, attendees, consumers):
+def __to_room_participant(presenters, attendees, consumers, collaborators):
     from azure.communication.identity._shared.models import identifier_from_raw_id
     from azure.communication.rooms import RoomParticipant, ParticipantRole
 
@@ -192,6 +192,11 @@ def __to_room_participant(presenters, attendees, consumers):
         identifiers = [identifier_from_raw_id(p) for p in consumers]
         participants.extend([RoomParticipant(communication_identifier=i,
                                              role=ParticipantRole.CONSUMER) for i in identifiers])
+
+    if collaborators is not None:
+        identifiers = [identifier_from_raw_id(p) for p in collaborators]
+        participants.extend([RoomParticipant(communication_identifier=i,
+                                             role=ParticipantRole.COLLABORATOR) for i in identifiers])
 
     return participants
 
@@ -225,9 +230,10 @@ def communication_rooms_create_room(client,
                                     pstn_dial_out_enabled=None,
                                     presenters=None,
                                     attendees=None,
-                                    consumers=None):
+                                    consumers=None,
+                                    collaborators=None):
     try:
-        room_participants = __to_room_participant(presenters, attendees, consumers)
+        room_participants = __to_room_participant(presenters, attendees, consumers, collaborators)
         pstn_dialed_out_enabled_str = __to_room_pstn_dial_out_enabled(pstn_dial_out_enabled)
 
         if pstn_dialed_out_enabled_str is None:
@@ -298,11 +304,12 @@ def communication_rooms_get_participants(client, room_id):
 def communication_rooms_add_or_update_participants(client, room_id,
                                                    presenters=None,
                                                    attendees=None,
-                                                   consumers=None):
+                                                   consumers=None,
+                                                   collaborators=None):
     try:
         return client.add_or_update_participants(
             room_id=room_id,
-            participants=__to_room_participant(presenters, attendees, consumers))
+            participants=__to_room_participant(presenters, attendees, consumers, collaborators))
     except HttpResponseError:
         raise
     except Exception as ex:
@@ -320,7 +327,7 @@ def communication_rooms_remove_participants(client, room_id, participants):
         sys.exit(str(ex))
 
 
-def __get_attachment_content(filename, filetype):
+def __get_attachment_content(filename, filetype, content_id=None):
 
     import json
     import os
@@ -337,24 +344,60 @@ def __get_attachment_content(filename, filetype):
         "contentInBase64": file_bytes_b64.decode(),
     }
 
+    if content_id is not None:
+        attachment["contentId"] = content_id
+
     return json.dumps(attachment)
 
 
-def prepare_attachments(attachments, attachment_types):
+def prepare_attachments(attachments, attachment_types, inline_attachments):
     from knack.util import CLIError
 
     attachments_list = []
+
+    if inline_attachments is None:
+        inline_attachments = []
+
+    if attachments is None:
+        attachments = []
+
+    if attachment_types is None:
+        attachment_types = []
+
     if attachments is None and attachment_types is None:
         attachments_list = None
-    elif attachments is None or attachment_types is None:
-        raise CLIError('Number of attachments and attachment-types should match.')
-    elif len(attachments) != len(attachment_types):
-        raise CLIError('Number of attachments and attachment-types should match.')
+    elif len(attachments) + len(inline_attachments) != len(attachment_types):
+        raise CLIError(
+            f'Mismatch: {len(attachments)} standard attachments + '
+            f'{len(inline_attachments)} inline attachments '
+            f'does not equal {len(attachment_types)} attachment types.'
+        )
     else:
-        all_attachments = attachments[0].split(',')
-        all_attachment_types = attachment_types[0].split(',')
-        for i, attachment in enumerate(all_attachments):
-            attachments_list.append(__get_attachment_content(attachment, all_attachment_types[i]))
+        content_id = None
+        # Process standard attachments
+        for i, attachment in enumerate(attachments):
+            attachment_content = __get_attachment_content(
+                attachment,
+                attachment_types[i],
+                content_id
+            )
+            attachments_list.append(attachment_content)
+
+        # Process inline attachments
+        for j, inline_attachment in enumerate(inline_attachments):
+            if inline_attachment.count('/') != 1:
+                raise CLIError(
+                    f'Incorrect format for inline attachment: {inline_attachment}. '
+                    'Format should be: FileLocation/ContentId, example: "ImageName.png/image".'
+                )
+            attachment_name, content_id = inline_attachment.split('/')
+            inline_attachment_type = attachment_types[len(attachments) + (j)]
+            attachment_content = __get_attachment_content(
+                attachment_name,
+                inline_attachment_type,
+                content_id
+            )
+            attachments_list.append(attachment_content)
 
     return attachments_list
 
@@ -372,6 +415,7 @@ def communication_email_send(client,
                              reply_to=None,
                              attachments=None,
                              attachment_types=None,
+                             inline_attachments=None,
                              waitUntil='completed'):
 
     import json
@@ -390,7 +434,7 @@ def communication_email_send(client,
         else:
             priority = '3'
 
-        attachments_list = prepare_attachments(attachments, attachment_types)
+        attachments_list = prepare_attachments(attachments, attachment_types, inline_attachments)
 
         message = {
             "content": {

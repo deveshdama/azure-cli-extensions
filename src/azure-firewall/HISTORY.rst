@@ -2,6 +2,19 @@
 
 Release History
 ===============
+1.2.3
+++++++
+* `az network firewall policy draft create`: Consume Policy Properies while creating draft
+* `az network firewall policy rule collection group draft create`: Consume RCG Properies while creating RCG draft
+
+1.2.2
+++++++
+* `az network firewall create`: add support public-ip for vhub sku firewall
+
+1.2.1
+++++++
+* Remove ADAL dependencies
+
 1.2.0
 ++++++
 * `network firewall policy rule-collection-group collection rule add/update"`: Add parameter `--http-headers-to-insert`
