@@ -7,6 +7,7 @@ from azure.cli.core.commands import CliCommandType
 
 from azext_aks_preview._client_factory import (
     cf_agent_pools,
+    cf_managed_namespaces,
     cf_maintenance_configurations,
     cf_managed_clusters,
     cf_mc_snapshots,
@@ -14,10 +15,14 @@ from azext_aks_preview._client_factory import (
     cf_machines,
     cf_operations,
     cf_load_balancers,
+    cf_identity_bindings,
+    cf_jwt_authenticators,
 )
+
 from azext_aks_preview._format import (
     aks_addon_list_available_table_format,
     aks_addon_list_table_format,
+    aks_namespace_list_table_format,
     aks_addon_show_table_format,
     aks_agentpool_list_table_format,
     aks_agentpool_show_table_format,
@@ -36,7 +41,16 @@ from azext_aks_preview._format import (
     aks_versions_table_format,
     aks_mesh_revisions_table_format,
     aks_mesh_upgrades_table_format,
+    aks_extension_list_table_format,
+    aks_extension_show_table_format,
+    aks_extension_types_list_table_format,
+    aks_extension_type_show_table_format,
+    aks_extension_type_versions_list_table_format,
+    aks_extension_type_version_show_table_format,
+    aks_jwtauthenticator_list_table_format,
+    aks_jwtauthenticator_show_table_format,
 )
+
 from knack.log import get_logger
 
 logger = get_logger(__name__)
@@ -94,6 +108,12 @@ def load_command_table(self, _):
         client_factory=cf_managed_clusters,
     )
 
+    managed_namespaces_sdk = CliCommandType(
+        operations_tmpl="azext_aks_preview.vendored_sdks.azure_mgmt_preview_aks."
+        "operations._managed_namespaces_operations#ManagedNamespacesOperations.{}",
+        client_factory=cf_managed_namespaces,
+    )
+
     machines_sdk = CliCommandType(
         operations_tmpl="azext_aks_preview.vendored_sdks.azure_mgmt_preview_aks."
         "operations._machine_operations#MachinesOperations.{}",
@@ -122,6 +142,12 @@ def load_command_table(self, _):
         operations_tmpl="azext_aks_preview.vendored_sdks.azure_mgmt_preview_aks."
         "operations._managed_clusters_snapshots_operations#ManagedClusterSnapshotsOperations.{}",
         client_factory=cf_mc_snapshots,
+    )
+
+    jwt_authenticators_sdk = CliCommandType(
+        operations_tmpl="azext_aks_preview.vendored_sdks.azure_mgmt_preview_aks."
+        "operations._jwt_authenticators_operations#JWTAuthenticatorsOperations.{}",
+        client_factory=cf_jwt_authenticators,
     )
 
     # AKS managed cluster commands
@@ -170,6 +196,7 @@ def load_command_table(self, _):
         g.custom_command(
             "operation-abort", "aks_operation_abort", supports_no_wait=True
         )
+        g.custom_command("bastion", "aks_bastion")
 
     # AKS maintenance configuration commands
     with self.command_group(
@@ -213,6 +240,20 @@ def load_command_table(self, _):
         g.custom_command("enable", "aks_addon_enable", supports_no_wait=True)
         g.custom_command("disable", "aks_addon_disable", supports_no_wait=True)
         g.custom_command("update", "aks_addon_update", supports_no_wait=True)
+
+    # AKS managed namespace commands
+    with self.command_group(
+        "aks namespace",
+        managed_namespaces_sdk,
+        client_factory=cf_managed_namespaces,
+        is_preview=True,
+    ) as g:
+        g.custom_command("add", "aks_namespace_add", supports_no_wait=True)
+        g.custom_command("update", "aks_namespace_update", supports_no_wait=True)
+        g.custom_show_command("show", "aks_namespace_show")
+        g.custom_command("list", "aks_namespace_list", table_transformer=aks_namespace_list_table_format)
+        g.custom_command("delete", "aks_namespace_delete", supports_no_wait=True)
+        g.custom_command("get-credentials", "aks_namespace_get_credentials")
 
     # AKS agent pool commands
     with self.command_group(
@@ -260,6 +301,7 @@ def load_command_table(self, _):
         g.custom_show_command(
             "show", "aks_machine_show", table_transformer=aks_machine_show_table_format
         )
+        g.custom_command("add", "aks_machine_add", supports_no_wait=True)
 
     with self.command_group(
         "aks operation", operations_sdk, client_factory=cf_operations
@@ -430,3 +472,87 @@ def load_command_table(self, _):
         "aks check-network", managed_clusters_sdk, client_factory=cf_managed_clusters
     ) as g:
         g.custom_command("outbound", "aks_check_network_outbound")
+
+    with self.command_group(
+        "aks extension", managed_clusters_sdk, client_factory=cf_managed_clusters
+    ) as g:
+        g.custom_command('create', 'create_k8s_extension', supports_no_wait=True)
+        g.custom_command('delete', 'delete_k8s_extension', supports_no_wait=True)
+        g.custom_command(
+            'list',
+            'list_k8s_extension',
+            table_transformer=aks_extension_list_table_format
+        )
+        g.custom_show_command(
+            'show',
+            'show_k8s_extension',
+            table_transformer=aks_extension_show_table_format
+        )
+        g.custom_command('update', 'update_k8s_extension', supports_no_wait=True)
+
+    with self.command_group(
+        "aks extension type", managed_clusters_sdk, client_factory=cf_managed_clusters
+    ) as g:
+        g.custom_show_command(
+            'show',
+            'show_k8s_extension_type',
+            table_transformer=aks_extension_type_show_table_format
+        )
+        g.custom_command(
+            'list',
+            'list_k8s_extension_types',
+            table_transformer=aks_extension_types_list_table_format
+        )
+
+    with self.command_group(
+        "aks extension type version", managed_clusters_sdk, client_factory=cf_managed_clusters
+    ) as g:
+        g.custom_show_command(
+            'show',
+            'show_k8s_extension_type_version',
+            table_transformer=aks_extension_type_version_show_table_format
+        )
+        g.custom_command(
+            'list',
+            'list_k8s_extension_type_versions',
+            table_transformer=aks_extension_type_versions_list_table_format
+        )
+
+# AKS identity binding commands
+    with self.command_group(
+        "aks identity-binding", managed_clusters_sdk, client_factory=cf_identity_bindings
+    ) as g:
+        g.custom_command("create", "aks_identity_binding_create")
+        g.custom_command("delete", "aks_identity_binding_delete")
+        g.custom_show_command("show", "aks_identity_binding_show")
+        g.custom_command("list", "aks_identity_binding_list")
+
+    # AKS jwt authenticator commands
+    with self.command_group(
+        "aks jwtauthenticator", jwt_authenticators_sdk, client_factory=cf_jwt_authenticators,
+    ) as g:
+        g.custom_command(
+            "add",
+            "aks_jwtauthenticator_add",
+            supports_no_wait=True
+        )
+        g.custom_command(
+            "update",
+            "aks_jwtauthenticator_update",
+            supports_no_wait=True
+        )
+        g.custom_command(
+            "delete",
+            "aks_jwtauthenticator_delete",
+            supports_no_wait=True, confirmation=True
+        )
+        g.custom_command(
+            "list",
+            "aks_jwtauthenticator_list",
+            table_transformer=aks_jwtauthenticator_list_table_format
+        )
+        g.custom_show_command(
+            "show",
+            "aks_jwtauthenticator_show",
+            table_transformer=aks_jwtauthenticator_show_table_format
+        )
